@@ -1,0 +1,16 @@
+# Credentials and authorized local data
+.env
+.env.*
+!.env.example
+.panda-private/
+.panda-runtime/
+.openai/
+*.csv
+*.validated.json
+sample*.json
+*.pem
+*.key
+__pycache__/
+node_modules/
+.DS_Store
+*.tar.gz
