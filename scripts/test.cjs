@@ -128,14 +128,146 @@ run('render=html=>{globalThis.testHTML=html};auctionBoard=testAuctionBoard;aucti
 for(let round=0;round<3;round++) {
   for(const key of ['time','sample','cost']) {
     run(`auctionInvestigate("${key}")`);
-    assert.equal(run(`testHTML.includes(simpleEvidence[state.auction.lots[state.auction.round].id]["${key}"])`),true);
-    assert.equal(run(`testHTML.includes(auctionQuestion(state.auction.lots[state.auction.round].id,"${key}"))`),true);
+    assert.equal(run(`testHTML.includes(plainFacts[state.auction.lots[state.auction.round].id]["${key}"])`),true);
+    assert.equal(run(`testHTML.includes(shortQuestions["${key}"])`),true);
   }
   run('auctionChoose("defer");auctionSeal()');
 }
 assert.equal(run('state.auction.decisions.length'),3);
-const beforeTutorial=run('JSON.stringify(state)');
-run('enterAuction();openTutorialEvidence();finishTutorial()');
-assert.equal(run('tutorialOpened&&tutorialDone'),true);
-assert.equal(run('JSON.stringify(state)'),beforeTutorial,'The cookie practice must not modify game or assessment records.');
-console.log('PASS: all beginner evidence renders and the practice example does not affect assessment records');
+console.log('PASS: all beginner evidence renders');
+
+
+// Use an isolated device history for each tier so self-report, assistance and repeat
+// exposure cannot accidentally borrow state from the older expedition tests.
+function tierSession(history={introSeen:false,lastLevel:null,seenLots:[],completed:0}) {
+  const saved=new Map([['panda-auction-experience-v1',JSON.stringify(history)]]);
+  const context=vm.createContext({localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))}});
+  vm.runInContext(fs.readFileSync('dist/engine.js','utf8'),context);
+  vm.runInContext(source,context);
+  const invoke=expression=>vm.runInContext(expression,context);
+  invoke('render=html=>{globalThis.testHTML=html};auctionFocus=()=>{};auctionResult=()=>{globalThis.testResultCount=(globalThis.testResultCount||0)+1}');
+  return {run:invoke,saved};
+}
+for(const level of ['starter','regular','advanced']) {
+  const t=tierSession().run;
+  t(`launchExperience('${level}')`);
+  assert.equal(t('state.auction.level'),level);
+  assert.equal(t('state.auction.mode'),level==='starter'?'guided':'challenge');
+  assert.equal(t('state.auction.lots.length'),3,'Every tier covers the same three assessment concepts.');
+  assert.equal(t('auctionProfile().selfDeclaredLevel'),level);
+  assert.equal(t('auctionProfile().verified'),false,'A chosen experience level is not a verified ability.');
+  t('auctionInvestigate("time");quickChoose("reject")');
+  assert.equal(t('state.auction.decisions.length'),0,'Selecting a verdict must not silently seal it.');
+  t('quickSubmit("");quickSubmit("made-up-reason");quickSubmit("limited")');
+  assert.equal(t('state.auction.decisions.length'),0,'A deliberate valid reason is required before moving on.');
+  assert.equal(t('state.auction.round'),0);
+  t('quickSubmit("time")');
+  assert.equal(t('state.auction.round'),1);
+  assert.equal(t('state.auction.decisions[0].basis'),'time');
+  assert.equal(t('state.auction.decisions[0].assisted'),level==='starter');
+  assert.equal(t('state.auction.coins'),level==='advanced'?2:3,'Only the advanced tier keeps a shared scarce budget.');
+  assert.equal(t('state.auction.selected'),null,'The next proposal needs a fresh decision.');
+  const sealed=t('JSON.stringify(state.auction.decisions[0])');
+  t('auctionInvestigate("sample")');
+  assert.equal(t('JSON.stringify(state.auction.decisions[0])'),sealed,'Later evidence cannot rewrite a sealed choice.');
+  t('quickChoose("reject");quickSubmit("sample");auctionInvestigate("sample");quickChoose("accept");quickSubmit("limited")');
+  assert.equal(t('state.auction.decisions.length'),3);
+  assert.equal(t('state.auction.revealed'),true);
+  assert.equal(t('testResultCount'),1);
+  assert.equal(t('auctionSummary().supported'),3);
+  assert.equal(t('auctionSummary().independent'),level==='starter'?0:3,'Guidance remains separate from an independent correct judgment.');
+  const finished=t('JSON.stringify(state.auction)');
+  t('quickChoose("accept");quickSubmit("limited");auctionSeal();auctionInvestigate("cost")');
+  assert.equal(t('JSON.stringify(state.auction)'),finished,'Repeated finish events cannot add a fourth answer or spend coins.');
+}
+console.log('PASS: three experience tiers, budget differences, deliberate submission, sealed records and assisted assessment');
+
+for(const reason of ['evidence','confused','unsure']) {
+  const t=tierSession().run;
+  t(`launchExperience('regular');quickChoose('defer');quickSubmit('${reason}')`);
+  assert.equal(t('state.auction.decisions[0].verdict'),'defer');
+  assert.equal(t('state.auction.decisions[0].basis'),'uncertain');
+  assert.equal(t('state.auction.decisions[0].waitReason'),reason,'Different reasons for waiting must stay distinct in the behavior record.');
+  assert.equal(t('auctionSummary().independent'),0);
+}
+const profitChoice=tierSession().run;
+profitChoice("launchExperience('regular');auctionInvestigate('time');quickChoose('accept');quickSubmit('profit')");
+assert.equal(profitChoice('state.auction.decisions[0].basis'),'profit');
+assert.equal(profitChoice('auctionSummary().independent'),0,'Attractive returns do not demonstrate evidence-based judgment.');
+const uncertainRejection=tierSession().run;
+uncertainRejection("launchExperience('regular');quickChoose('reject');quickSubmit('unsure')");
+assert.equal(uncertainRejection('state.auction.decisions[0].basis'),'uncertain');
+assert.equal(uncertainRejection('auctionSummary().independent'),0);
+console.log('PASS: waiting reasons, uncertain rejection and profit-based acceptance retain distinct meaning');
+
+// Returning is a navigation preference; repeated evidence depends on the actual
+// proposals seen on this device, even when the previous run was abandoned.
+const newReturning=tierSession().run;
+newReturning("launchExperience('advanced',true);auctionInvestigate('time');quickChoose('reject');quickSubmit('time')");
+assert.equal(newReturning('state.auction.decisions[0].repeated'),false,'Selecting already played does not invent history.');
+assert.equal(newReturning('auctionSummary().independent'),1);
+const partial=tierSession({introSeen:true,lastLevel:'starter',seenLots:['clock'],completed:0}).run;
+partial("launchExperience('regular',true);auctionInvestigate('time');quickChoose('reject');quickSubmit('time')");
+assert.equal(partial('state.auction.decisions[0].repeated'),true,'An abandoned but already seen proposal is repeated.');
+partial("auctionInvestigate('sample');quickChoose('reject');quickSubmit('sample')");
+assert.equal(partial('state.auction.decisions[1].repeated'),false,'An unseen proposal still supplies new evidence.');
+assert.equal(partial('auctionSummary().independent'),1);
+const historySnapshot=partial('JSON.stringify(state.auction.decisions)');
+partial("state.auction.level='advanced'");
+assert.equal(partial('JSON.stringify(state.auction.decisions)'),historySnapshot,'Changing self-reported level cannot rewrite recorded help or repeated exposure.');
+console.log('PASS: return preference and per-proposal repeat exposure remain separate from self-reported level');
+
+for(const [verdict,reason] of [['reject','time'],['accept','limited']]) {
+  const t=tierSession().run;
+  t(`launchExperience('advanced');quickSkipClue();quickChoose('${verdict}');quickSubmit('${reason}')`);
+  assert.equal(t('state.auction.decisions[0].opened.length'),0);
+  assert.equal(t('auctionSummary().independent'),0,'Guessing the expected answer without opening evidence is not independent support.');
+  assert.equal(t('auctionProfile().verified'),false);
+}
+const helped=tierSession().run;
+helped("launchExperience('regular');auctionInvestigate('time');auctionHint();quickChoose('reject');quickSubmit('time')");
+assert.equal(helped('state.auction.decisions[0].hint'),true);
+assert.equal(helped('auctionSummary().supported'),1);
+assert.equal(helped('auctionSummary().independent'),0,'An on-demand explanation must be separated from independent judgment.');
+const changedLevel=helped('auctionProfile().verified');
+helped("state.auction.level='advanced'");
+assert.equal(helped('auctionProfile().verified'),changedLevel,'Changing presentation level cannot upgrade an assessment.');
+assert.equal(helped('auctionProfile().evidence.filter(e=>e.event==="auction_verdict")[0].hint'),true,'Profile export must retain help and repeat flags.');
+assert.equal(helped('auctionProfile().evidence.filter(e=>e.event==="auction_verdict")[0].repeated'),false);
+assert.equal(helped('auctionProfile().evidence.filter(e=>e.event==="auction_verdict")[0].assisted'),false);
+console.log('PASS: unknown evidence, on-demand help and self-declared level cannot create independent ability');
+
+const remembered=tierSession();
+remembered.run("markLotSeen('clock');markLotSeen('clock');saveExperience({lastLevel:'regular'})");
+const history=JSON.parse(remembered.saved.get('panda-auction-experience-v1'));
+assert.deepEqual(history.seenLots,['clock'],'Reopening a proposal must not duplicate exposure history.');
+assert.deepEqual(Object.keys(history).sort(),['completed','introSeen','lastLevel','seenLots'],'Device memory stores only minimal navigation and seen-case history.');
+remembered.saved.set('panda-auction-experience-v1','not valid JSON');
+assert.equal(remembered.run('experienceHistory().seenLots.length'),0,'Corrupt saved preferences must not prevent play.');
+remembered.run("delete globalThis.localStorage;launchExperience('starter')");
+assert.equal(remembered.run('state.auction.level'),'starter','The game must still work when browser storage is unavailable.');
+console.log('PASS: minimal local history, exposure deduplication, corrupted history and storage-unavailable fallback');
+
+const costConcern=tierSession().run;
+costConcern("launchExperience('regular');auctionInvestigate('cost');quickChoose('reject');quickSubmit('cost')");
+assert.equal(costConcern('auctionSummary().supported'),1,'A visible omitted fee is a valid reason to question the report.');
+assert.equal(costConcern('auctionSummary().independent'),1);
+assert.equal(costConcern('auctionSummary().evaluated[0].r.primaryVerified'),false,'Finding the fee omission does not prove the player identified future leakage.');
+assert.equal(costConcern('auctionSummary().target'),'time','The next task still covers the unexamined time-order issue.');
+const noCostEvidence=tierSession().run;
+noCostEvidence("launchExperience('regular');quickSkipClue();quickChoose('reject');quickSubmit('cost')");
+assert.equal(noCostEvidence('auctionSummary().supported'),0,'A lucky guess about fees still requires the underlying evidence.');
+const confused=tierSession().run;
+confused("launchExperience('advanced');quickSkipClue();quickChoose('defer');quickSubmit('confused');quickSkipClue();quickChoose('defer');quickSubmit('confused')");
+assert.equal(confused('auctionProfile().species'),'探索候鸟','Not understanding two proposals must not be mislabeled as deliberate patience.');
+assert.equal(confused('auctionProfile().route'),'guided','A stated comprehension need overrides a self-selected advanced presentation.');
+assert.equal(confused('auctionSummary().independent'),0);
+const exhausted=tierSession().run;
+exhausted("launchExperience('advanced');auctionInvestigate('time');auctionInvestigate('sample');auctionInvestigate('cost');quickChoose('reject');quickSubmit('time')");
+assert.equal(exhausted('state.auction.coins'),0);
+exhausted("auctionInvestigate('sample')");
+assert.equal(exhausted('(state.auction.opened[state.auction.lots[1].id]||[]).length'),0,'An exhausted budget cannot expose a new record.');
+exhausted("quickSkipClue();quickChoose('defer');quickSubmit('evidence')");
+assert.equal(exhausted('state.auction.decisions[1].waitReason'),'evidence');
+assert.equal(exhausted('auctionSummary().evaluated[1].r.unknown'),true,'An unviewed concept remains unknown, not a wrong answer.');
+console.log('PASS: valid secondary evidence, untested main issue, comprehension support and exhausted-budget uncertainty');
