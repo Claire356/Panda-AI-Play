@@ -29,3 +29,25 @@ const noTrade=run('research(3,flat,12)');assert.equal(noTrade.ret,0);assert.equa
 const bad=sample.map(x=>({...x}));bad[1].date=bad[0].date;bad[2].close=null;c.bad=bad;
 assert.equal(run('qualityReport(bad)').duplicates,1);assert.equal(run('qualityReport(bad)').missing,1);
 console.log('PASS: no lookahead, 18-row dataset, no-trade returns, benchmark cost, quality checks');
+// Auction rules: scarce evidence is not low ability; hints/repeats are not independent evidence.
+run('auctionBoard=()=>{};auctionResult=()=>{};startAuction()');
+run('auctionInvestigate("time");auctionInvestigate("time")');assert.equal(run('state.auction.coins'),2);
+run('auctionInvestigate("sample");auctionInvestigate("cost");auctionChoose("reject");state.auction.basis="time";auctionSeal();auctionInvestigate("sample")');assert.equal(run('state.auction.coins'),0);assert.equal(run('state.auction.opened.garden.length'),0);
+assert.equal(run('state.auction.decisions[0].opened.length'),3);
+const reject={verdict:'reject',basis:'time',confidence:'certain',opened:['time'],hint:false,repeated:false};c.rejection=reject;
+assert.equal(run('evaluateLot(auctionLots(0)[0],rejection).independent'),true);
+assert.equal(run('evaluateLot(auctionLots(0)[0],{...rejection,hint:true}).independent'),false);
+assert.equal(run('evaluateLot(auctionLots(0)[0],{...rejection,repeated:true}).independent'),false);
+assert.equal(run('evaluateLot(auctionLots(0)[0],{...rejection,opened:[]}).unknown'),true);
+assert.equal(run('evaluateLot(auctionLots(0)[0],{...rejection,verdict:"defer",basis:"uncertain",opened:[]}).reserved'),true);
+assert.equal(run('auctionLots(1)[0].id'),'garden');
+assert.equal(run('auctionNumbers(fixture).valid.periods'),5);
+assert.equal(run('auctionNumbers(flat).oracle'),0);
+run('state=fresh();state.auction={lots:auctionLots(0),decisions:auctionLots(0).map(l=>({lot:l.id,verdict:l.flaw?"reject":"accept",basis:l.flaw||"bounded",opened:[l.flaw||"sample"],hint:false,repeated:false,confidence:"tentative"})),practice:null};state.support="independent"');
+assert.equal(run('profile().route'),'independent');assert.equal(run('auctionSummary().target'),'boundary');
+run('state.auction.decisions[0].opened=[]');assert.equal(run('auctionSummary().target'),'time');
+run('state.auction.decisions.forEach(d=>d.hint=true)');assert.equal(run('profile().route'),'guided');
+console.log('PASS: auction evidence budget, sealed records, hints, unknowns, replay, data calculations and adaptive next task');
+run('state.auction.decisions[0].opened=["time"];state.auction.decisions[1].verdict="defer";state.auction.decisions[1].basis="uncertain"');
+assert.equal(run('auctionSummary().target'),'sample');
+console.log('PASS: sample-gap recommendation');
