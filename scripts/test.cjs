@@ -51,3 +51,16 @@ console.log('PASS: auction evidence budget, sealed records, hints, unknowns, rep
 run('state.auction.decisions[0].opened=["time"];state.auction.decisions[1].verdict="defer";state.auction.decisions[1].basis="uncertain"');
 assert.equal(run('auctionSummary().target'),'sample');
 console.log('PASS: sample-gap recommendation');
+// The cinematic timeline must remain deterministic when seeking or replaying.
+for (const [frame,chapter] of [[0,0],[49,0],[50,1],[100,2],[150,3],[200,3]]) {
+  assert.equal(run(`filmPose(${frame}).chapter`),chapter);
+  assert(Number.isFinite(run(`filmPose(${frame}).scale`)));
+}
+assert.equal(run('filmPose(-10).seconds'),0);
+assert.equal(run('filmPose(250).seconds'),20);
+assert.equal(run('filmPose(125).asset'),1);
+assert.equal(run('filmPose(70,true).scale'),1);
+assert.equal(run('filmPose(177).stamp'),false);
+assert.equal(run('filmPose(178).stamp'),true);
+assert.equal(run('JSON.stringify(filmPose(70))'),run('JSON.stringify(filmPose(70))'));
+console.log('PASS: cinematic cuts, seeking bounds, reduced motion and finale');
